@@ -50,25 +50,20 @@ class DNSHandler():
 
     def parse(self, data):
         response = ""
-
         try:
             # Parse data as DNS
             d = DNSRecord.parse(data)
-
         except Exception as e:
             print("[%s] %s: ERROR: %s" % (time.strftime("%H:%M:%S"), self.client_address[0], "invalid DNS request"))
             if self.server.log:
                 self.server.log.write("[%s] %s: ERROR: %s\n" % (time.strftime("%d/%b/%Y:%H:%M:%S %z"), self.client_address[0], "invalid DNS request"))
-
         else:
             # Only Process DNS Queries
             if QR[d.header.qr] == "QUERY":
-
                 # Gather query parameters
                 # NOTE: Do not lowercase qname here, because we want to see
                 #       any case request weirdness in the logs.
                 qname = str(d.q.qname)
-
                 # Chop off the last period
                 if qname[-1] == '.':
                     qname = qname[:-1]
@@ -77,14 +72,11 @@ class DNSHandler():
 
                 # Find all matching fake DNS records for the query name or get False
                 fake_records = dict()
-
                 for record in self.server.nametodns:
-
                     fake_records[record] = self.findnametodns(qname, self.server.nametodns[record])
 
                 # Check if there is a fake record for the current request qtype
                 if qtype in fake_records and fake_records[qtype]:
-
                     fake_record = fake_records[qtype]
 
                     # Create a custom response to the query
@@ -175,7 +167,6 @@ class DNSHandler():
 
                     for qtype, fake_record in fake_records.items():
                         if fake_record:
-
                             # NOTE: RDMAP is a dictionary map of qtype strings to handling classses
                             # IPv6 needs additional work before inclusion:
                             if qtype == "AAAA":
@@ -262,7 +253,6 @@ class DNSHandler():
 
     # Find appropriate ip address to use for a queried name. The function can
     def findnametodns(self, qname, nametodns):
-
         # Make qname case insensitive
         qname = qname.lower()
 
@@ -273,7 +263,6 @@ class DNSHandler():
         # HACK: It is important to search the nametodns dictionary before iterating it so that
         # global matching ['*.*.*.*.*.*.*.*.*.*'] will match last. Use sorting for that.
         for domain, host in sorted(nametodns.items(), key=operator.itemgetter(1)):
-
             # NOTE: It is assumed that domain name was already lowercased
             #       when it was loaded through --file, --fakedomains or --truedomains
             #       don't want to waste time lowercasing domains on every request.
@@ -297,12 +286,10 @@ class DNSHandler():
         reply = None
         try:
             if self.server.ipv6:
-
                 if protocol == "udp":
                     sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
                 elif protocol == "tcp":
                     sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-
             else:
                 if protocol == "udp":
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -312,12 +299,10 @@ class DNSHandler():
             sock.settimeout(3.0)
 
             # Send the proxy request to a randomly chosen DNS server
-
             if protocol == "udp":
                 sock.sendto(request, (host, int(port)))
                 reply = sock.recv(1024)
                 sock.close()
-
             elif protocol == "tcp":
                 sock.connect((host, int(port)))
 
@@ -342,7 +327,6 @@ class UDPHandler(DNSHandler, socketserver.BaseRequestHandler):
     def handle(self):
         (data, socket) = self.request
         response = self.parse(data)
-
         if response:
             socket.sendto(response, self.client_address)
 
@@ -355,8 +339,8 @@ class TCPHandler(DNSHandler, socketserver.BaseRequestHandler):
         # Remove the addition "length" parameter used in the
         # TCP DNS protocol
         data = data[2:]
-        response = self.parse(data)
 
+        response = self.parse(data)
         if response:
             # Calculate and add the additional "length" parameter
             # used in TCP DNS protocol
@@ -419,7 +403,6 @@ def start_cooking(interface, nametodns, nameservers, tcp=False, ipv6=False, port
             time.sleep(100)
 
     except (KeyboardInterrupt, SystemExit):
-
         if log:
             log.write("[%s] DNSChef is shutting down.\n" % (time.strftime("%d/%b/%Y:%H:%M:%S %z")))
             log.close()
