@@ -1,5 +1,8 @@
 #!/usr/bin/env python
-#
+
+# Copyright (C) 2014 Peter Kacherginsky
+# All rights reserved.
+
 # DNSChef is a highly configurable DNS Proxy for Penetration Testers
 # and Malware Analysts. Please visit http://thesprawl.org/projects/dnschef/
 # for the latest version and documentation. Please forward all issues and
@@ -7,55 +10,39 @@
 
 DNSCHEF_VERSION = "0.3"
 
-# Copyright (C) 2014 Peter Kacherginsky
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-# 3. Neither the name of the copyright holder nor the names of its contributors
-#    may be used to endorse or promote products derived from this software without
-#    specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
-# ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+import sys
+import time
+import threading
+import optparse
+import configparser
 
-from optparse import OptionParser, OptionGroup
-from configparser import ConfigParser
-
-from dnslib import *
-from IPy import IP
-
-import threading, random, operator, time
-import socketserver, socket, sys
-import binascii
+import socket
+import socketserver
 import base64
+import binascii
 
-log_write = print
+import random
+import operator
 
-# DNSHandler Mixin. The class contains generic functions to parse DNS requests and
-# calculate an appropriate response based on user parameters.
+import IPy
+from dnslib import *
+
+log = print  #("[%s] %s: ERROR: %s" % (time.strftime("%H:%M:%S"), self.client_address[0], "invalid DNS request"))
+# time.strftime("%d/%b/%Y:%H:%M:%S %z")
+
+
 class DNSHandler():
+    '''DNSHandler Mixin.
 
+    This class contains generic functions to parse DNS requests and
+    calculate an appropriate response based on user parameters.
+    '''
     def parse(self, data):
         response = ""
         try:
             d = DNSRecord.parse(data)  # Parse data as DNS
         except Exception as e:
-            log_write("[%s] %s: ERROR: %s" % (time.strftime("%H:%M:%S"), self.client_address[0], "invalid DNS request"))
+            log("%s: ERROR: Invalid DNS request" % self.client_address[0])
         else:
             # Only Process DNS Queries
             if QR[d.header.qr] == "QUERY":
@@ -80,11 +67,11 @@ class DNSHandler():
 
                     # Create a custom response to the query
                     response = DNSRecord(DNSHeader(id=d.header.id, bitmap=d.header.bitmap, qr=1, aa=1, ra=1), q=d.q)
-                    log_write("[%s] %s: cooking the response of type '%s' for %s to %s" % (time.strftime("%H:%M:%S"), self.client_address[0], qtype, qname, fake_record))
+                    log("%s: cooking the response of type '%s' for %s to %s" % (self.client_address[0], qtype, qname, fake_record))
 
                     # IPv6 needs additional work before inclusion:
                     if qtype == "AAAA":
-                        ipv6 = IP(fake_record)
+                        ipv6 = IPy.IP(fake_record)
                         ipv6_bin = ipv6.strBin()
                         ipv6_hex_tuple = [int(ipv6_bin[i:i+8], 2) for i in xrange(0, len(ipv6_bin), 8)]
                         response.add_answer(RR(qname, getattr(QTYPE, qtype), rdata=RDMAP[qtype](ipv6_hex_tuple)))
@@ -155,7 +142,7 @@ class DNSHandler():
                     response = response.pack()
 
                 elif qtype == "*" and None not in fake_records.values():
-                    log_write("[%s] %s: cooking the response of type '%s' for %s with %s" % (time.strftime("%H:%M:%S"), self.client_address[0], "ANY", qname, "all known fake records."))
+                    log("%s: cooking the response of type '%s' for %s with %s" % (self.client_address[0], "ANY", qname, "all known fake records."))
 
                     response = DNSRecord(DNSHeader(id=d.header.id, bitmap=d.header.bitmap, qr=1, aa=1, ra=1), q=d.q)
 
@@ -164,7 +151,7 @@ class DNSHandler():
                             # NOTE: RDMAP is a dictionary map of qtype strings to handling classses
                             # IPv6 needs additional work before inclusion:
                             if qtype == "AAAA":
-                                ipv6 = IP(fake_record)
+                                ipv6 = IPy.IP(fake_record)
                                 ipv6_bin = ipv6.strBin()
                                 fake_record = [int(ipv6_bin[i:i+8], 2) for i in xrange(0, len(ipv6_bin), 8)]
 
@@ -235,7 +222,7 @@ class DNSHandler():
 
                 # Proxy the request
                 else:
-                    log_write("[%s] %s: proxying the response of type '%s' for %s" % (time.strftime("%H:%M:%S"), self.client_address[0], qtype, qname))
+                    log("%s: proxying the response of type '%s' for %s" % (self.client_address[0], qtype, qname))
 
                     nameserver_tuple = random.choice(self.server.nameservers).split('#')
                     response = self.proxy_request(data, *nameserver_tuple)
@@ -243,14 +230,13 @@ class DNSHandler():
         return response
 
 
-    # Find appropriate ip address to use for a queried name. The function can
     def find_name_to_dns(self, qname, name_to_dns):
+        'Find appropriate ip address to use for a queried name.'
         # Make qname case insensitive
         qname = qname.lower()
 
         # Split and reverse qname into components for matching.
-        qnamelist = qname.split('.')
-        qnamelist.reverse()
+        qname = qname.split('.').reverse()
 
         # HACK: It is important to search the name_to_dns dictionary before iterating it so that
         # global matching ['*.*.*.*.*.*.*.*.*.*'] will match last. Use sorting for that.
@@ -260,11 +246,10 @@ class DNSHandler():
             #       don't want to waste time lowercasing domains on every request.
 
             # Split and reverse domain into components for matching
-            domain = domain.split('.')
-            domain.reverse()
+            domain = domain.split('.').reverse()
 
             # Compare domains in reverse.
-            for a, b in zip(qnamelist, domain):
+            for a, b in zip(qname, domain):
                 if a != b and b != "*":
                     break
             else:
@@ -277,24 +262,16 @@ class DNSHandler():
     def proxy_request(self, request, host, port="53", protocol="udp"):
         reply = None
         try:
-            if self.server.ipv6:
-                if protocol == "udp":
-                    sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-                elif protocol == "tcp":
-                    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-            else:
-                if protocol == "udp":
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                elif protocol == "tcp":
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+            sock = socket.socket(
+                socket.AF_INET6 if self.server.ipv6 else socket.AF_INET,
+                socket.SOCK_STREAM if protocol == "tcp" else socket.SOCK_DGRAM
+            )
             sock.settimeout(3.0)
 
             # Send the proxy request to a randomly chosen DNS server
             if protocol == "udp":
                 sock.sendto(request, (host, int(port)))
                 reply = sock.recv(1024)
-                sock.close()
             elif protocol == "tcp":
                 sock.connect((host, int(port)))
 
@@ -306,10 +283,11 @@ class DNSHandler():
                 reply = sock.recv(1024)
                 reply = reply[2:]
 
-                sock.close()
+            sock.close()
 
         except Exception as e:
-            print("[!] Could not proxy request: %s" % e)
+            log("[!] Could not proxy request: %s" % e)
+
         else:
             return reply
 
@@ -341,25 +319,25 @@ class TCPHandler(DNSHandler, socketserver.BaseRequestHandler):
 
 
 class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
-    # Override socketserver.UDPServer to add extra parameters
+    'Override socketserver.UDPServer to add extra parameters.'
     def __init__(self, server_address, RequestHandlerClass, name_to_dns, nameservers, ipv6):
-        self.name_to_dns  = name_to_dns
-        self.nameservers = nameservers
-        self.ipv6        = ipv6
+        self.name_to_dns    = name_to_dns
+        self.nameservers    = nameservers
+        self.ipv6           = ipv6
         self.address_family = socket.AF_INET6 if self.ipv6 else socket.AF_INET
 
         socketserver.UDPServer.__init__(self, server_address, RequestHandlerClass)
 
 
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    # Override default value
-    allow_reuse_address = True
+    'Override socketserver.TCPServer to add extra parameters.'
 
-    # Override socketserver.TCPServer to add extra parameters
+    allow_reuse_address = True  # Override default value
+
     def __init__(self, server_address, RequestHandlerClass, name_to_dns, nameservers, ipv6):
-        self.name_to_dns   = name_to_dns
-        self.nameservers = nameservers
-        self.ipv6        = ipv6
+        self.name_to_dns    = name_to_dns
+        self.nameservers    = nameservers
+        self.ipv6           = ipv6
         self.address_family = socket.AF_INET6 if self.ipv6 else socket.AF_INET
 
         socketserver.TCPServer.__init__(self, server_address, RequestHandlerClass)
@@ -368,14 +346,8 @@ class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 def start_cooking(opt, name_to_dns, nameservers):
     'Initialize and start the DNS Server.'
     try:
-        if opt.logfile:
-            log = open(logfile, 'a', 0)
-            log.write("[%s] DNSChef is active.\n" % (time.strftime("%d/%b/%Y:%H:%M:%S %z")))
-        else:
-            log = None
-
         if opt.tcp:
-            print("[*] DNSChef is running in TCP mode")
+            log("[*] DNSChef is running in TCP mode")
             server_class = ThreadedTCPServer
             handler = TCPHandler
         else:
@@ -402,19 +374,13 @@ def start_cooking(opt, name_to_dns, nameservers):
             time.sleep(100)
 
     except (KeyboardInterrupt, SystemExit):
-        if log:
-            log.write("[%s] DNSChef is shutting down.\n" % (time.strftime("%d/%b/%Y:%H:%M:%S %z")))
-            log.close()
-
+        log("[*] DNSChef is shutting down.")
+        if log_file:
+            log_file.close()
         server.shutdown()
-        print("[*] DNSChef is shutting down.")
-        sys.exit()
-
-    except IOError:
-        print("[!] Failed to open log file for writing.")
 
     except Exception as e:
-        print("[!] Failed to start the server: %s" % e)
+        log("[!] Failed to start the server: %s" % e)
 
 
 if __name__ == "__main__":
@@ -430,12 +396,12 @@ if __name__ == "__main__":
     """ % DNSCHEF_VERSION
 
     # Parse command line arguments
-    parser = OptionParser(
+    parser = optparse.OptionParser(
         usage = "dnschef.py [options]:\n" + header,
         description="DNSChef is a highly configurable DNS Proxy for Penetration Testers and Malware Analysts. It is capable of fine configuration of which DNS replies to modify or to simply proxy with real responses. In order to take advantage of the tool you must either manually configure or poison DNS server entry to point to DNSChef. The tool requires root privileges to run on privileged ports."
     )
 
-    fakegroup = OptionGroup(parser, "Fake DNS records:")
+    fakegroup = optparse.OptionGroup(parser, "Fake DNS records:")
     fakegroup.add_option('--fakeip', metavar="192.0.2.1", action="store", help='IP address to use for matching DNS queries. If you use this parameter without specifying domain names, then all \'A\' queries will be spoofed. Consider using --file argument if you need to define more than one IP address.')
     fakegroup.add_option('--fakeipv6', metavar="2001:db8::1", action="store", help='IPv6 address to use for matching DNS queries. If you use this parameter without specifying domain names, then all \'AAAA\' queries will be spoofed. Consider using --file argument if you need to define more than one IPv6 address.')
     fakegroup.add_option('--fakemail', metavar="mail.fake.com", action="store", help='MX name to use for matching DNS queries. If you use this parameter without specifying domain names, then all \'MX\' queries will be spoofed. Consider using --file argument if you need to define more than one MX record.')
@@ -447,7 +413,7 @@ if __name__ == "__main__":
     parser.add_option('--fakedomains', metavar="thesprawl.org, google.com", action="store", help='A comma separated list of domain names which will be resolved to FAKE values specified in the the above parameters. All other domain names will be resolved to their true values.')
     parser.add_option('--truedomains', metavar="thesprawl.org, google.com", action="store", help='A comma separated list of domain names which will be resolved to their TRUE values. All other domain names will be resolved to fake values specified in the above parameters.')
 
-    rungroup = OptionGroup(parser, "Optional runtime parameters.")
+    rungroup = optparse.OptionGroup(parser, "Optional runtime parameters.")
     rungroup.add_option("--logfile", action="store", help="Specify a log file to record all activity")
     rungroup.add_option("--nameservers", metavar="8.8.8.8#53 or 4.2.2.1#53#tcp or 2001:4860:4860::8888", default='8.8.8.8', action="store", help='A comma separated list of alternative DNS servers to use with proxied requests. Nameservers can have either IP or IP#PORT format. A randomly selected server from the list will be used for proxy requests when provided with multiple servers. By default, the tool uses Google\'s public DNS server 8.8.8.8 when running in IPv4 mode and 2001:4860:4860::8888 when running in IPv6 mode.')
     rungroup.add_option("-i", "--interface", metavar="127.0.0.1 or ::1", default="127.0.0.1", action="store", help='Define an interface to use for the DNS listener. By default, the tool uses 127.0.0.1 for IPv4 mode and ::1 for IPv6 mode.')
@@ -462,6 +428,16 @@ if __name__ == "__main__":
     # Print program header
     if opt.verbose:
         print(header)
+
+    try:
+        if opt.logfile:
+            log_file = open(opt.logfile, 'a', 0)
+            log("DNSChef is active.")
+        else:
+            log_file = None
+
+    except IOError:
+        log("[!] Failed to open log file for writing.")
 
     # Main storage of domain filters
     # NOTE: RDMAP is a dictionary map of qtype strings to handling classes
@@ -480,27 +456,27 @@ if __name__ == "__main__":
 
     # Notify user about alternative listening port
     if opt.port != "53":
-        print("[*] Listening on an alternative port %s" % opt.port)
+        log("[*] Listening on an alternative port %s" % opt.port)
 
     # Adjust defaults for IPv6
     if opt.ipv6:
-        print("[*] Using IPv6 mode.")
+        log("[*] Using IPv6 mode.")
         if opt.interface == "127.0.0.1":
             opt.interface = "::1"
 
         if opt.nameservers == "8.8.8.8":
             opt.nameservers = "2001:4860:4860::8888"
 
-    print("[*] DNSChef started on interface: %s " % opt.interface)
+    log("[*] DNSChef started on interface: %s " % opt.interface)
 
     # Use alternative DNS servers
     if opt.nameservers:
         nameservers = opt.nameservers.split(', ')
-        print("[*] Using the following nameservers: %s" % ", ".join(nameservers))
+        log("[*] Using the following nameservers: %s" % ", ".join(nameservers))
 
     # External file definitions
     if opt.file:
-        config = ConfigParser()
+        config = configparser.ConfigParser()
         config.read(opt.file)
         for section in config.sections():
             if section in name_to_dns:
@@ -509,9 +485,9 @@ if __name__ == "__main__":
                     domain = domain.lower()
 
                     name_to_dns[section][domain] = record
-                    print("[+] Cooking %s replies for domain %s with '%s'" % (section, domain, record))
+                    log("[+] Cooking %s replies for domain %s with '%s'" % (section, domain, record))
             else:
-                print("[!] DNS Record '%s' is not supported. Ignoring section contents." % section)
+                log("[!] DNS Record '%s' is not supported. Ignoring section contents." % section)
 
     # DNS Record and Domain Name definitions
     # NOTE: '*.*.*.*.*.*.*.*.*.*' domain is used to match all possible queries.
@@ -523,23 +499,23 @@ if __name__ == "__main__":
 
                 if opt.fakeip:
                     name_to_dns["A"][domain] = opt.fakeip
-                    print("[*] Cooking A replies to point to %s matching: %s" % (opt.fakeip, domain))
+                    log("[*] Cooking A replies to point to %s matching: %s" % (opt.fakeip, domain))
 
                 if opt.fakeipv6:
                     name_to_dns["AAAA"][domain] = opt.fakeipv6
-                    print("[*] Cooking AAAA replies to point to %s matching: %s" % (opt.fakeipv6, domain))
+                    log("[*] Cooking AAAA replies to point to %s matching: %s" % (opt.fakeipv6, domain))
 
                 if opt.fakemail:
                     name_to_dns["MX"][domain] = opt.fakemail
-                    print("[*] Cooking MX replies to point to %s matching: %s" % (opt.fakemail, domain))
+                    log("[*] Cooking MX replies to point to %s matching: %s" % (opt.fakemail, domain))
 
                 if opt.fakealias:
                     name_to_dns["CNAME"][domain] = opt.fakealias
-                    print("[*] Cooking CNAME replies to point to %s matching: %s" % (opt.fakealias, domain))
+                    log("[*] Cooking CNAME replies to point to %s matching: %s" % (opt.fakealias, domain))
 
                 if opt.fakens:
                     name_to_dns["NS"][domain] = opt.fakens
-                    print("[*] Cooking NS replies to point to %s matching: %s" % (opt.fakens, domain))
+                    log("[*] Cooking NS replies to point to %s matching: %s" % (opt.fakens, domain))
 
         elif opt.truedomains:
             for domain in opt.truedomains.split(', '):
@@ -548,27 +524,27 @@ if __name__ == "__main__":
 
                 if opt.fakeip:
                     name_to_dns["A"][domain] = False
-                    print("[*] Cooking A replies to point to %s not matching: %s" % (opt.fakeip, domain))
+                    log("[*] Cooking A replies to point to %s not matching: %s" % (opt.fakeip, domain))
                     name_to_dns["A"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakeip
 
                 if opt.fakeipv6:
                     name_to_dns["AAAA"][domain] = False
-                    print("[*] Cooking AAAA replies to point to %s not matching: %s" % (opt.fakeipv6, domain))
+                    log("[*] Cooking AAAA replies to point to %s not matching: %s" % (opt.fakeipv6, domain))
                     name_to_dns["AAAA"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakeipv6
 
                 if opt.fakemail:
                     name_to_dns["MX"][domain] = False
-                    print("[*] Cooking MX replies to point to %s not matching: %s" % (opt.fakemail, domain))
+                    log("[*] Cooking MX replies to point to %s not matching: %s" % (opt.fakemail, domain))
                     name_to_dns["MX"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakemail
 
                 if opt.fakealias:
                     name_to_dns["CNAME"][domain] = False
-                    print("[*] Cooking CNAME replies to point to %s not matching: %s" % (opt.fakealias, domain))
+                    log("[*] Cooking CNAME replies to point to %s not matching: %s" % (opt.fakealias, domain))
                     name_to_dns["CNAME"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakealias
 
                 if opt.fakens:
                     name_to_dns["NS"][domain] = False
-                    print("[*] Cooking NS replies to point to %s not matching: %s" % (opt.fakens, domain))
+                    log("[*] Cooking NS replies to point to %s not matching: %s" % (opt.fakens, domain))
                     name_to_dns["NS"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakealias
 
         else:
@@ -577,27 +553,27 @@ if __name__ == "__main__":
 
             if opt.fakeip:
                 name_to_dns["A"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakeip
-                print("[*] Cooking all A replies to point to %s" % opt.fakeip)
+                log("[*] Cooking all A replies to point to %s" % opt.fakeip)
 
             if opt.fakeipv6:
                 name_to_dns["AAAA"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakeipv6
-                print("[*] Cooking all AAAA replies to point to %s" % opt.fakeipv6)
+                log("[*] Cooking all AAAA replies to point to %s" % opt.fakeipv6)
 
             if opt.fakemail:
                 name_to_dns["MX"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakemail
-                print("[*] Cooking all MX replies to point to %s" % opt.fakemail)
+                log("[*] Cooking all MX replies to point to %s" % opt.fakemail)
 
             if opt.fakealias:
                 name_to_dns["CNAME"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakealias
-                print("[*] Cooking all CNAME replies to point to %s" % opt.fakealias)
+                log("[*] Cooking all CNAME replies to point to %s" % opt.fakealias)
 
             if opt.fakens:
                 name_to_dns["NS"]['*.*.*.*.*.*.*.*.*.*'] = opt.fakens
-                print("[*] Cooking all NS replies to point to %s" % opt.fakens)
+                log("[*] Cooking all NS replies to point to %s" % opt.fakens)
 
     # Proxy all DNS requests
     if not any((opt.fakeip, opt.fakeipv6, opt.fakemail, opt.fakealias, opt.fakens, opt.file)):
-        print("[*] No parameters were specified. Running in full proxy mode")
+        log("[*] No parameters were specified. Running in full proxy mode")
 
     # Launch DNSChef
     start_cooking(opt=opt, name_to_dns=name_to_dns, nameservers=nameservers)
